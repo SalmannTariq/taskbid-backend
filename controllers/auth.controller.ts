@@ -36,6 +36,7 @@ export async function Register(req: Request, res: Response) {
 }
 
 export async function Login(req: Request, res: Response) {
+  console.log("\n End Point Hit : ", req.url)
   const { email, password } = req.body ?? {};
   try {
     if (!email || !password) {
@@ -66,7 +67,8 @@ export async function Login(req: Request, res: Response) {
   }
 }
 
-export async function Logout(_req: Request, res: Response) {
+export async function Logout(req: Request, res: Response) {
+  console.log("\n End Point Hit : ", req.url)
   clearAuthCookie(res);
   return res.status(200).json({ message: "Logged out successfully" });
 }

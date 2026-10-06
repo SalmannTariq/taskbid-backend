@@ -1,10 +1,17 @@
+export type TaskPerson = {
+  id: string | number;
+  name: string;
+  email: string;
+};
+
 export type TaskRow = {
   id: string;
-  created_by: string;
+  created_by: TaskPerson | string;
+  assignee?: TaskPerson | null;
   title: string;
   description: string;
   estimated_complexity: number;
-  status: "draft" | "open" | "bidding_closed" | "assigned" | "in_progress" | "review" | "done";
+  status: string;
   deadline: Date;
   created_at: Date;
 };
@@ -12,6 +19,7 @@ export type TaskRow = {
 export type TaskLockRow = {
   id: string;
   status: string;
+  created_by: string;
 };
 
 export type StatusError = Error & { statusCode?: number };

@@ -6,17 +6,37 @@ import type { StatusError, TaskLockRow, TaskRow } from "../contract/task.contrac
 import { parseId, sendDbError, setActor, toNumber, withTransaction } from "../lib/http";
 
 const patchTargets: Record<string, string[]> = {
-  draft: ["open", "cancelled"],
-  open: ["cancelled"],
-  assigned: ["completed", "cancelled"],
-  completed: [],
-  cancelled: [],
+  draft: ["open"],
+  open: ["bidding_closed"],
+  assigned: ["in_progress"],
+  in_progress: ["review"],
+  review: ["done"],
 };
+
+const creatorMoves = new Set(["draft", "open", "review"]);
+const assigneeMoves = new Set(["assigned", "in_progress"]);
+
+function personId(value: TaskRow["created_by"]) {
+  return typeof value === "object" ? toNumber(value.id) : toNumber(value);
+}
+
+function mapPerson(value: TaskRow["created_by"] | null | undefined) {
+  if (value == null) return null;
+  if (typeof value === "object") {
+    return {
+      id: toNumber(value.id),
+      name: value.name,
+      email: value.email,
+    };
+  }
+  return { id: toNumber(value), name: "", email: "" };
+}
 
 function mapTask(row: TaskRow) {
   return {
     id: toNumber(row.id),
-    createdBy: toNumber(row.created_by),
+    createdBy: mapPerson(row.created_by),
+    assignee: mapPerson(row.assignee),
     title: row.title,
     description: row.description,
     estimatedComplexity: row.estimated_complexity,
@@ -31,10 +51,35 @@ export async function listTasks(req: Request, res: Response) {
   console.log("Body : ", req.body)
   try {
     const result = await pool.query<TaskRow>(
-      `SELECT id, created_by, title, description, estimated_complexity, status, deadline, created_at
-       FROM tasks
-       ORDER BY created_at DESC`
+      `SELECT
+          t.id,
+          t.title,
+          t.description,
+          t.estimated_complexity,
+          t.status,
+          t.deadline,
+          t.created_at,
+          json_build_object(
+            'id', u.id,
+            'name', u.name,
+            'email', u.email
+          ) AS created_by,
+          (
+            SELECT json_build_object(
+              'id', au.id,
+              'name', au.name,
+              'email', au.email
+            )
+            FROM bids b
+            JOIN users au ON au.id = b.user_id
+            WHERE b.task_id = t.id AND b.status = 'accepted'
+            LIMIT 1
+          ) AS assignee
+       FROM tasks t
+       JOIN users u ON u.id = t.created_by
+       ORDER BY t.created_at DESC`
     );
+    // console.log("Result : ", result.rows)
     return res.json(result.rows.map(mapTask));
   } catch (err) {
     return sendDbError(res, err);
@@ -111,15 +156,35 @@ export async function updateTaskStatus(req: Request, res: Response) {
         return null;
       }
 
-      const allowed = patchTargets[current.rows[0].status] ?? [];
+      const currentStatus = current.rows[0].status;
+      const allowed = patchTargets[currentStatus] ?? [];
       if (!allowed.includes(nextStatus)) {
         const message =
           allowed.length === 0
-            ? `task is ${current.rows[0].status} and cannot change status`
-            : `task can move from ${current.rows[0].status} to ${allowed.join(" or ")}`;
+            ? `task is ${currentStatus} and cannot change status`
+            : `task can move from ${currentStatus} to ${allowed.join(" or ")}`;
         const error = new Error(message) as StatusError;
         error.statusCode = 400;
         throw error;
+      }
+
+      const creatorId = personId(current.rows[0].created_by);
+      if (creatorMoves.has(currentStatus) && changedBy !== creatorId) {
+        const error = new Error("only the task creator can change this status") as StatusError;
+        error.statusCode = 403;
+        throw error;
+      }
+      if (assigneeMoves.has(currentStatus)) {
+        const accepted = await client.query<{ user_id: string }>(
+          "SELECT user_id FROM bids WHERE task_id = $1 AND status = 'accepted'",
+          [taskId]
+        );
+        const assigneeId = accepted.rowCount ? toNumber(accepted.rows[0].user_id) : null;
+        if (changedBy !== assigneeId) {
+          const error = new Error("only the assignee can change this status") as StatusError;
+          error.statusCode = 403;
+          throw error;
+        }
       }
 
       await setActor(client, changedBy);
@@ -139,8 +204,8 @@ export async function updateTaskStatus(req: Request, res: Response) {
     return res.json(mapTask(task));
   } catch (err) {
     const statusCode = (err as StatusError).statusCode;
-    if (statusCode === 400) {
-      return res.status(400).json({ error: (err as Error).message });
+    if (statusCode === 400 || statusCode === 403) {
+      return res.status(statusCode).json({ error: (err as Error).message });
     }
     return sendDbError(res, err);
   }
@@ -169,14 +234,17 @@ export async function assignTask(req: Request, res: Response) {
 
 async function assignLowestValidBidder(client: PoolClient, taskId: number, changedBy: number) {
   const taskResult = await client.query<TaskLockRow>(
-    "SELECT id, status FROM tasks WHERE id = $1 FOR UPDATE",
+    "SELECT id, status, created_by FROM tasks WHERE id = $1 FOR UPDATE",
     [taskId]
   );
   if (taskResult.rowCount === 0) {
     return { statusCode: 404, body: { error: "task not found" } };
   }
-  if (taskResult.rows[0].status !== "open") {
-    return { statusCode: 400, body: { error: "only an open task can be assigned" } };
+  if (toNumber(taskResult.rows[0].created_by) !== changedBy) {
+    return { statusCode: 403, body: { error: "only the task creator can assign this task" } };
+  }
+  if (taskResult.rows[0].status !== "bidding_closed") {
+    return { statusCode: 400, body: { error: "only a task with closed bidding can be assigned" } };
   }
 
   const bids = await client.query<PendingBid>(
@@ -200,7 +268,7 @@ async function assignLowestValidBidder(client: PoolClient, taskId: number, chang
       `SELECT
          (
            COALESCE(SUM(b.hours_offered) FILTER (
-             WHERE b.status = 'accepted' AND t.status = 'assigned'
+             WHERE b.status = 'accepted' AND t.status IN ('assigned', 'in_progress', 'review')
            ), 0) + $2::numeric
          ) <= u.max_capacity_hours AS fits
        FROM users u
