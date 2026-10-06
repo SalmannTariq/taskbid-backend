@@ -1,12 +1,18 @@
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import { pool } from "./db";
 import indexRoutes from "./routes/index.routes";
 
 const app = express();
-
-app.use(cors());
+app.use(
+  cors({
+    origin: process.env.CORS_WHITELIST?.split(",") || [],
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
 
 const PORT = 3000;
 
