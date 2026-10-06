@@ -43,6 +43,8 @@ function mapTask(row: TaskRow) {
     status: row.status,
     deadline: row.deadline,
     createdAt: row.created_at,
+    bidCount: row.bid_count == null ? 0 : toNumber(row.bid_count),
+    lowestBid: row.lowest_bid == null ? null : toNumber(row.lowest_bid),
   };
 }
 
@@ -74,7 +76,9 @@ export async function listTasks(req: Request, res: Response) {
             JOIN users au ON au.id = b.user_id
             WHERE b.task_id = t.id AND b.status = 'accepted'
             LIMIT 1
-          ) AS assignee
+          ) AS assignee,
+          (SELECT COUNT(*)::int FROM bids WHERE task_id = t.id) AS bid_count,
+          (SELECT MIN(hours_offered) FROM bids WHERE task_id = t.id) AS lowest_bid
        FROM tasks t
        JOIN users u ON u.id = t.created_by
        ORDER BY t.created_at DESC`

@@ -11,6 +11,7 @@ export type BidRow = {
   hours_offered: string;
   status: string;
   created_at: Date;
+  user_name?: string;
 };
 
 export type CapacityFitRow = {

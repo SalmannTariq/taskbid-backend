@@ -14,6 +14,8 @@ export type TaskRow = {
   status: string;
   deadline: Date;
   created_at: Date;
+  bid_count?: string | number;
+  lowest_bid?: string | number | null;
 };
 
 export type TaskLockRow = {
