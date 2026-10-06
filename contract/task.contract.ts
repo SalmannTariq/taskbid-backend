@@ -4,7 +4,7 @@ export type TaskRow = {
   title: string;
   description: string;
   estimated_complexity: number;
-  status: string;
+  status: "draft" | "open" | "bidding_closed" | "assigned" | "in_progress" | "review" | "done";
   deadline: Date;
   created_at: Date;
 };

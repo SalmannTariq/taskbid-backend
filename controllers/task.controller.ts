@@ -26,7 +26,24 @@ function mapTask(row: TaskRow) {
   };
 }
 
+export async function listTasks(req: Request, res: Response) {
+  console.log("\n End Point Hit : ", req.url)
+  console.log("Body : ", req.body)
+  try {
+    const result = await pool.query<TaskRow>(
+      `SELECT id, created_by, title, description, estimated_complexity, status, deadline, created_at
+       FROM tasks
+       ORDER BY created_at DESC`
+    );
+    return res.json(result.rows.map(mapTask));
+  } catch (err) {
+    return sendDbError(res, err);
+  }
+}
+
 export async function createTask(req: Request, res: Response) {
+  console.log("\n End Point Hit : ", req.url)
+  console.log("Body : ", req.body)
   const { title, description, estimatedComplexity, deadline, createdBy } = req.body ?? {};
   const complexity = Number(estimatedComplexity);
   const creatorId = Number(createdBy);
@@ -62,6 +79,8 @@ export async function createTask(req: Request, res: Response) {
 }
 
 export async function updateTaskStatus(req: Request, res: Response) {
+  console.log("\n End Point Hit : ", req.url)
+  console.log("Body : ", req.body)
   const taskId = parseId(req.params.id);
   const nextStatus = req.body?.status;
   const changedBy = Number(req.body?.changedBy);
@@ -128,6 +147,8 @@ export async function updateTaskStatus(req: Request, res: Response) {
 }
 
 export async function assignTask(req: Request, res: Response) {
+  console.log("\n End Point Hit : ", req.url)
+  console.log("Body : ", req.body)
   const taskId = parseId(req.params.id);
   const changedBy = Number(req.body?.changedBy);
 

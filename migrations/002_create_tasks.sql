@@ -4,12 +4,12 @@ CREATE TABLE tasks (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   estimated_complexity SMALLINT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open',
+  status TEXT NOT NULL DEFAULT 'draft',
   deadline TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT tasks_title_not_blank CHECK (length(trim(title)) > 0),
   CONSTRAINT tasks_complexity_range CHECK (estimated_complexity BETWEEN 1 AND 5),
-  CONSTRAINT tasks_status_check CHECK (status IN ('open', 'assigned', 'completed', 'cancelled'))
+  CONSTRAINT tasks_status_check CHECK (status IN ('draft', 'open', 'bidding_closed', 'assigned', 'in_progress', 'review', 'done'))
 );
 
 CREATE INDEX tasks_created_by_idx ON tasks (created_by);
