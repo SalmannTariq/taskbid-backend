@@ -1,4 +1,4 @@
-export type PendingBid = {
+export type BidOffer = {
   id: string;
   user_id: string;
   hours_offered: string;
@@ -9,17 +9,12 @@ export type BidRow = {
   task_id: string;
   user_id: string;
   hours_offered: string;
-  status: string;
   created_at: Date;
   user_name?: string;
 };
 
 export type CapacityFitRow = {
   fits: boolean;
-};
-
-export type BidIdRow = {
-  id: string;
 };
 
 export type TaskStatusRow = {

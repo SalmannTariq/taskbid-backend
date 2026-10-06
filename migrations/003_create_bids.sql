@@ -3,10 +3,8 @@ CREATE TABLE bids (
   task_id BIGINT NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
   user_id BIGINT NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
   hours_offered NUMERIC(6, 2) NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT bids_hours_positive CHECK (hours_offered > 0),
-  CONSTRAINT bids_status_check CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn')),
   CONSTRAINT bids_one_per_user_per_task UNIQUE (task_id, user_id)
 );
 

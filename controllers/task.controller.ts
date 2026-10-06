@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import type { PoolClient } from "pg";
 import { pool } from "../db";
-import type { BidIdRow, CapacityFitRow, PendingBid } from "../contract/bid.contract";
+import type { BidOffer, CapacityFitRow } from "../contract/bid.contract";
 import type { StatusError, TaskLockRow, TaskRow } from "../contract/task.contract";
 import { parseId, sendDbError, setActor, toNumber, withTransaction } from "../lib/http";
 
@@ -74,7 +74,7 @@ export async function listTasks(req: Request, res: Response) {
             )
             FROM bids b
             JOIN users au ON au.id = b.user_id
-            WHERE b.task_id = t.id AND b.status = 'accepted'
+            WHERE b.task_id = t.id
             LIMIT 1
           ) AS assignee,
           (SELECT COUNT(*)::int FROM bids WHERE task_id = t.id) AS bid_count,
@@ -179,11 +179,11 @@ export async function updateTaskStatus(req: Request, res: Response) {
         throw error;
       }
       if (assigneeMoves.has(currentStatus)) {
-        const accepted = await client.query<{ user_id: string }>(
-          "SELECT user_id FROM bids WHERE task_id = $1 AND status = 'accepted'",
+        const assigned = await client.query<{ assigned_to: string | null }>(
+          "SELECT assigned_to FROM tasks WHERE id = $1",
           [taskId]
         );
-        const assigneeId = accepted.rowCount ? toNumber(accepted.rows[0].user_id) : null;
+        const assigneeId = assigned.rows[0]?.assigned_to == null ? null : toNumber(assigned.rows[0].assigned_to);
         if (changedBy !== assigneeId) {
           const error = new Error("only the assignee can change this status") as StatusError;
           error.statusCode = 403;
@@ -251,28 +251,29 @@ async function assignLowestValidBidder(client: PoolClient, taskId: number, chang
     return { statusCode: 400, body: { error: "only a task with closed bidding can be assigned" } };
   }
 
-  const bids = await client.query<PendingBid>(
+  const bids = await client.query<BidOffer>(
     `SELECT id, user_id, hours_offered
      FROM bids
-     WHERE task_id = $1 AND status = 'pending'
+     WHERE task_id = $1
      ORDER BY hours_offered ASC, created_at ASC
      FOR UPDATE`,
     [taskId]
   );
   if (bids.rowCount === 0) {
-    return { statusCode: 409, body: { error: "task has no pending bids" } };
+    return { statusCode: 409, body: { error: "task has no bids" } };
   }
 
   const userIds = [...new Set(bids.rows.map((bid) => bid.user_id))].sort((a, b) => Number(a) - Number(b));
   await client.query("SELECT id FROM users WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE", [userIds]);
 
-  let winner: PendingBid | null = null;
+  let winner: BidOffer | null = null;
   for (const bid of bids.rows) {
     const capacity = await client.query<CapacityFitRow>(
       `SELECT
          (
            COALESCE(SUM(b.hours_offered) FILTER (
-             WHERE b.status = 'accepted' AND t.status IN ('assigned', 'in_progress', 'review')
+             WHERE t.assigned_to = b.user_id
+               AND t.status IN ('assigned', 'in_progress', 'review')
            ), 0) + $2::numeric
          ) <= u.max_capacity_hours AS fits
        FROM users u
@@ -293,27 +294,18 @@ async function assignLowestValidBidder(client: PoolClient, taskId: number, chang
   }
 
   await setActor(client, changedBy);
-  await client.query("UPDATE bids SET status = 'accepted' WHERE id = $1", [winner.id]);
-  const rejected = await client.query<BidIdRow>(
-    `UPDATE bids
-     SET status = 'rejected'
-     WHERE task_id = $1 AND status = 'pending' AND id <> $2
-     RETURNING id`,
-    [taskId, winner.id]
+  await client.query(
+    "UPDATE tasks SET status = 'assigned', assigned_to = $2 WHERE id = $1",
+    [taskId, winner.user_id]
   );
-  await client.query("UPDATE tasks SET status = 'assigned' WHERE id = $1", [taskId]);
 
   return {
     statusCode: 200,
     body: {
       taskId,
       status: "assigned",
-      assignedBid: {
-        id: toNumber(winner.id),
-        userId: toNumber(winner.user_id),
-        hoursOffered: toNumber(winner.hours_offered),
-      },
-      rejectedBidIds: rejected.rows.map((row) => toNumber(row.id)),
+      assignedTo: toNumber(winner.user_id),
+      hoursOffered: toNumber(winner.hours_offered),
     },
   };
 }

@@ -9,7 +9,6 @@ function mapBid(row: BidRow) {
     taskId: toNumber(row.task_id),
     userId: toNumber(row.user_id),
     hoursOffered: toNumber(row.hours_offered),
-    status: row.status,
     createdAt: row.created_at,
     userName: row.user_name ?? "",
   };
@@ -59,8 +58,7 @@ export async function placeBid(req: Request, res: Response) {
          FROM bids b
          JOIN tasks t ON t.id = b.task_id
          WHERE b.user_id = $1
-           AND b.status = 'accepted'
-           AND t.status IN ('assigned', 'in_progress', 'review')`,
+           AND t.assigned_to = b.user_id`,
         [userId]
       );
       const remaining = toNumber(user.rows[0].max_capacity_hours) - toNumber(used.rows[0].used);
@@ -74,7 +72,7 @@ export async function placeBid(req: Request, res: Response) {
       const result = await client.query<BidRow>(
         `INSERT INTO bids (task_id, user_id, hours_offered)
          VALUES ($1, $2, $3)
-         RETURNING id, task_id, user_id, hours_offered, status, created_at`,
+         RETURNING id, task_id, user_id, hours_offered, created_at`,
         [taskId, userId, hoursOffered]
       );
       const placed = result.rows[0];
@@ -101,7 +99,7 @@ export async function listBids(req: Request, res: Response) {
     }
 
     const result = await pool.query<BidRow>(
-      `SELECT b.id, b.task_id, b.user_id, b.hours_offered, b.status, b.created_at, u.name AS user_name
+       `SELECT b.id, b.task_id, b.user_id, b.hours_offered, b.created_at, u.name AS user_name
        FROM bids b
        JOIN users u ON u.id = b.user_id
        WHERE b.task_id = $1
