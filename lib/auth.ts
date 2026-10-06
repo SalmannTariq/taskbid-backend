@@ -15,13 +15,14 @@ function jwtSecret() {
 }
 
 function cookieOptions(): CookieOptions {
+  const crossSite = process.env.NODE_ENV === "production" || process.env.RENDER === "true";
   return {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    httpOnly: true,
+    secure: crossSite,
+    sameSite: crossSite ? "none" : "lax",
     path: "/",
     maxAge: Days_MS,
-  }
+  };
 }
 
 export function signAuthToken(user: AuthUser) {

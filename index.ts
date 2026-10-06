@@ -5,9 +5,14 @@ import { pool } from "./db";
 import indexRoutes from "./routes/index.routes";
 
 const app = express();
+const allowedOrigins = (process.env.CORS_WHITELIST ?? "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+
 app.use(
   cors({
-    origin: process.env.CORS_WHITELIST?.split(",") || [],
+    origin: allowedOrigins,
     credentials: true,
   })
 );
