@@ -1,21 +1,12 @@
 import type { Request, Response } from "express";
+import type { DashboardRow } from "../contract/dashboard.contract";
 import { pool } from "../db";
 import { sendDbError, toNumber } from "../lib/http";
 
-const taskStatuses = ["draft", "open", "bidding_closed", "assigned", "in_progress", "review", "done"] as const;
+const taskStatuses = ["draft", "open", "bidding_closed", "assigned", "in_progress", "review", "done"] ;
 
-type AverageBidRow = { complexity: number; average_bid: string | number | null };
-type TopUserRow = { id: string | number; name: string; completed_tasks: string | number };
-type ZeroBidRow = { id: string | number; title: string; status: string; deadline: string };
-
-type DashboardRow = {
-  tasks_by_status: Record<string, number> | null;
-  average_bid_by_complexity: AverageBidRow[] | null;
-  top_users: TopUserRow[] | null;
-  tasks_with_zero_bids: ZeroBidRow[] | null;
-};
-
-export async function getDashboardStats(_req: Request, res: Response) {
+export async function getDashboardStats(req: Request, res: Response) {
+  console.log("\n End Point Hit : ",req.url);
   try {
     const result = await pool.query<DashboardRow>(
       `SELECT
@@ -44,12 +35,11 @@ export async function getDashboardStats(_req: Request, res: Response) {
          ), '[]'::jsonb) AS average_bid_by_complexity,
          COALESCE((
            SELECT jsonb_agg(jsonb_build_object(
-             'id', id,
              'name', name,
              'completed_tasks', completed_tasks
            ) ORDER BY completed_tasks DESC, name)
            FROM (
-             SELECT u.id, u.name, COUNT(*)::int AS completed_tasks
+             SELECT u.name, COUNT(*)::int AS completed_tasks
              FROM tasks t
              JOIN users u ON u.id = t.assigned_to
              WHERE t.status = 'done'
@@ -60,17 +50,19 @@ export async function getDashboardStats(_req: Request, res: Response) {
          ), '[]'::jsonb) AS top_users,
          COALESCE((
            SELECT jsonb_agg(jsonb_build_object(
-             'id', id,
-             'title', title,
-             'status', status,
-             'deadline', deadline
-           ) ORDER BY deadline)
+             'complexity', complexity,
+             'count', count
+           ) ORDER BY complexity)
            FROM (
-             SELECT t.id, t.title, t.status, t.deadline
-             FROM tasks t
-             WHERE t.deadline < NOW()
-               AND NOT EXISTS (SELECT 1 FROM bids b WHERE b.task_id = t.id)
-             ORDER BY t.deadline
+             SELECT
+               levels.complexity,
+               COUNT(t.id)::int AS count
+             FROM generate_series(1, 5) AS levels(complexity)
+             LEFT JOIN tasks t
+               ON t.estimated_complexity = levels.complexity
+              AND t.deadline < NOW()
+              AND NOT EXISTS (SELECT 1 FROM bids b WHERE b.task_id = t.id)
+             GROUP BY levels.complexity
            ) AS missed
          ), '[]'::jsonb) AS tasks_with_zero_bids`
     );
@@ -88,15 +80,12 @@ export async function getDashboardStats(_req: Request, res: Response) {
         averageBid: item.average_bid == null ? null : toNumber(item.average_bid),
       })),
       topUsers: (row.top_users ?? []).map((user) => ({
-        id: toNumber(user.id),
         name: user.name,
         completedTasks: toNumber(user.completed_tasks),
       })),
-      tasksWithZeroBids: (row.tasks_with_zero_bids ?? []).map((task) => ({
-        id: toNumber(task.id),
-        title: task.title,
-        status: task.status,
-        deadline: task.deadline,
+      tasksWithZeroBids: (row.tasks_with_zero_bids ?? []).map((item) => ({
+        complexity: toNumber(item.complexity),
+        count: toNumber(item.count),
       })),
     });
   } catch (err) {

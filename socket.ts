@@ -1,6 +1,5 @@
 import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
-import { Auth_Cookie, verifyAuthToken } from "./lib/auth";
 
 let io: Server | null = null;
 
@@ -11,38 +10,12 @@ function allowedOrigins() {
     .filter((origin) => origin.length > 0);
 }
 
-function cookieValue(header: string | undefined, name: string) {
-  if (!header) return null;
-  for (const piece of header.split(";")) {
-    const trimmed = piece.trim();
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    if (trimmed.slice(0, eq) !== name) continue;
-    return decodeURIComponent(trimmed.slice(eq + 1));
-  }
-  return null;
-}
-
 export const initSocket = (server: HttpServer) => {
   io = new Server(server, {
     cors: {
       origin: allowedOrigins(),
       credentials: true,
     },
-  });
-
-  io.use((socket, next) => {
-    const token = cookieValue(socket.handshake.headers.cookie, Auth_Cookie);
-    if (!token) {
-      next(new Error("unauthorized"));
-      return;
-    }
-    try {
-      verifyAuthToken(token);
-      next();
-    } catch {
-      next(new Error("unauthorized"));
-    }
   });
 
   io.on("connection", (socket) => {

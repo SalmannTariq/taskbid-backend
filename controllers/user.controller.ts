@@ -3,6 +3,23 @@ import { parseId, sendDbError, toNumber } from "../lib/http";
 import { Request, Response } from "express";
 
 
+export async function listUsers(_req: Request, res: Response) {
+  try {
+    const result = await pool.query<{ id: string; name: string; email: string }>(
+      "SELECT id, name, email FROM users ORDER BY name"
+    );
+    return res.json(
+      result.rows.map((row) => ({
+        id: toNumber(row.id),
+        name: row.name,
+        email: row.email,
+      }))
+    );
+  } catch (err) {
+    return sendDbError(res, err);
+  }
+}
+
 export async function getUserWorkload(req: Request, res: Response) {
     console.log("\n End Point Hit : ",req.url)
     const userId = parseId(req.params.id);

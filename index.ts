@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import cookieParser from "cookie-parser";
 import { pool } from "./db";
 import indexRoutes from "./routes/index.routes";
 import { closeExpiredBidding } from "./lib/closeBidding";
@@ -19,7 +18,6 @@ app.use(
   })
 );
 app.use(express.json());
-app.use(cookieParser());
 
 const PORT = process.env.PORT || 3000;
 
