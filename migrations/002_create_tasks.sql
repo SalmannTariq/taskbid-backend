@@ -6,6 +6,7 @@ CREATE TABLE tasks (
   estimated_complexity SMALLINT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
   deadline TIMESTAMPTZ NOT NULL,
+  assigned_to BIGINT REFERENCES users (id) ON DELETE RESTRICT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT tasks_title_not_blank CHECK (length(trim(title)) > 0),
   CONSTRAINT tasks_complexity_range CHECK (estimated_complexity BETWEEN 1 AND 5),

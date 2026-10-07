@@ -10,7 +10,3 @@ CREATE TABLE bids (
 
 CREATE INDEX bids_task_id_idx ON bids (task_id);
 CREATE INDEX bids_user_id_idx ON bids (user_id);
-
-CREATE UNIQUE INDEX bids_one_accepted_per_task
-  ON bids (task_id)
-  WHERE status = 'accepted';

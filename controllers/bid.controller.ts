@@ -1,7 +1,6 @@
 import type { Request, Response } from "express";
 import type { BidRow } from "../contract/bid.contract";
 import { pool } from "../db";
-import { closeTaskIfDeadlinePassed } from "../lib/closeBidding";
 import { parseId, sendDbError, toNumber, withTransaction } from "../lib/http";
 import { publishChange } from "../socket";
 
@@ -33,45 +32,9 @@ export async function placeBid(req: Request, res: Response) {
 
   try {
     const bid = await withTransaction(async (client) => {
-      if (await closeTaskIfDeadlinePassed(client, taskId)) {
-        return { statusCode: 400, body: { error: "bidding is closed" }, changed: true };
-      }
-      const task = await client.query<{ status: string; created_by: string }>(
-        "SELECT status, created_by FROM tasks WHERE id = $1 FOR UPDATE",
-        [taskId]
-      );
+      const task = await client.query("SELECT id FROM tasks WHERE id = $1", [taskId]);
       if (task.rowCount === 0) {
         return { statusCode: 404, body: { error: "task not found" } };
-      }
-      if (task.rows[0].status !== "open") {
-        return { statusCode: 400, body: { error: "bids can only be placed on an open task" } };
-      }
-      if (toNumber(task.rows[0].created_by) === userId) {
-        return { statusCode: 400, body: { error: "you cannot bid on your own task" } };
-      }
-
-      const user = await client.query<{ max_capacity_hours: string }>(
-        "SELECT max_capacity_hours FROM users WHERE id = $1 FOR UPDATE",
-        [userId]
-      );
-      if (user.rowCount === 0) {
-        return { statusCode: 400, body: { error: "userId must be a user id" } };
-      }
-
-      const used = await client.query<{ used: string }>(
-        `SELECT COALESCE(SUM(b.hours_offered), 0) AS used
-         FROM bids b
-         JOIN tasks t ON t.id = b.task_id
-         WHERE b.user_id = $1
-           AND t.assigned_to = b.user_id`,
-        [userId]
-      );
-      const remaining = toNumber(user.rows[0].max_capacity_hours) - toNumber(used.rows[0].used);
-      if (hoursOffered > remaining) {
-        return {
-          statusCode: 409,
-          body: { error: `hours offered exceed your remaining capacity of ${remaining}` },
-        };
       }
 
       const result = await client.query<BidRow>(
@@ -85,7 +48,7 @@ export async function placeBid(req: Request, res: Response) {
       placed.user_name = name.rows[0]?.name ?? "";
       return { statusCode: 201, body: mapBid(placed) };
     });
-    if (bid.statusCode === 201 || ("changed" in bid && bid.changed)) publishChange(taskId);
+    if (bid.statusCode === 201) publishChange(taskId);
     return res.status(bid.statusCode).json(bid.body);
   } catch (err) {
     return sendDbError(res, err);

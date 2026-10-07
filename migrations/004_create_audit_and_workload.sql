@@ -21,7 +21,8 @@ SELECT
   u.hourly_rate,
   u.max_capacity_hours,
   COALESCE(SUM(b.hours_offered) FILTER (
-    WHERE b.status = 'accepted' AND t.status = 'assigned'
+    WHERE t.assigned_to = u.id
+      AND t.status IN ('assigned', 'in_progress', 'review')
   ), 0) AS current_workload
 FROM users u
 LEFT JOIN bids b ON b.user_id = u.id
@@ -38,8 +39,12 @@ BEGIN
   END IF;
 
   IF NOT (
-    (OLD.status = 'open' AND NEW.status IN ('assigned', 'cancelled')) OR
-    (OLD.status = 'assigned' AND NEW.status IN ('completed', 'cancelled'))
+    (OLD.status = 'draft' AND NEW.status = 'open') OR
+    (OLD.status = 'open' AND NEW.status = 'bidding_closed') OR
+    (OLD.status = 'bidding_closed' AND NEW.status = 'assigned') OR
+    (OLD.status = 'assigned' AND NEW.status = 'in_progress') OR
+    (OLD.status = 'in_progress' AND NEW.status = 'review') OR
+    (OLD.status = 'review' AND NEW.status = 'done')
   ) THEN
     RAISE EXCEPTION 'invalid task status transition from % to %', OLD.status, NEW.status;
   END IF;
@@ -52,49 +57,6 @@ CREATE TRIGGER tasks_status_transition
   BEFORE UPDATE OF status ON tasks
   FOR EACH ROW
   EXECUTE FUNCTION prevent_invalid_task_status_change();
-
-CREATE FUNCTION prevent_invalid_bid_status_change()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  capacity NUMERIC(6, 2);
-  used_hours NUMERIC(6, 2);
-BEGIN
-  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
-    RETURN NEW;
-  END IF;
-
-  IF OLD.status <> 'pending' OR NEW.status NOT IN ('accepted', 'rejected', 'withdrawn') THEN
-    RAISE EXCEPTION 'invalid bid status transition from % to %', OLD.status, NEW.status;
-  END IF;
-
-  IF NEW.status = 'accepted' THEN
-    SELECT max_capacity_hours INTO capacity
-    FROM users
-    WHERE id = NEW.user_id;
-
-    SELECT COALESCE(SUM(b.hours_offered), 0) INTO used_hours
-    FROM bids b
-    JOIN tasks t ON t.id = b.task_id
-    WHERE b.user_id = NEW.user_id
-      AND b.id <> NEW.id
-      AND b.status = 'accepted'
-      AND t.status = 'assigned';
-
-    IF used_hours + NEW.hours_offered > capacity THEN
-      RAISE EXCEPTION 'accepting this bid would exceed the user max capacity';
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER bids_status_transition
-  BEFORE UPDATE OF status ON bids
-  FOR EACH ROW
-  EXECUTE FUNCTION prevent_invalid_bid_status_change();
 
 CREATE FUNCTION log_status_change()
 RETURNS TRIGGER
@@ -142,7 +104,64 @@ CREATE TRIGGER tasks_status_audit
   FOR EACH ROW
   EXECUTE FUNCTION log_status_change('task');
 
-CREATE TRIGGER bids_status_audit
-  AFTER UPDATE OF status ON bids
+CREATE FUNCTION prevent_invalid_bid_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  creator BIGINT;
+  task_status TEXT;
+  task_deadline TIMESTAMPTZ;
+  capacity NUMERIC(6, 2);
+  used_hours NUMERIC(6, 2);
+  remaining NUMERIC(6, 2);
+BEGIN
+  SELECT created_by, status, deadline
+  INTO creator, task_status, task_deadline
+  FROM tasks
+  WHERE id = NEW.task_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'task not found';
+  END IF;
+
+  IF creator = NEW.user_id THEN
+    RAISE EXCEPTION 'you cannot bid on your own task';
+  END IF;
+
+  IF task_status <> 'open' OR task_deadline <= NOW() THEN
+    RAISE EXCEPTION 'bids can only be placed on an open task before the bid deadline';
+  END IF;
+
+  SELECT max_capacity_hours
+  INTO capacity
+  FROM users
+  WHERE id = NEW.user_id
+  FOR UPDATE;
+
+  IF capacity IS NULL THEN
+    RAISE EXCEPTION 'userId must be a user id';
+  END IF;
+
+  SELECT COALESCE(SUM(b.hours_offered), 0)
+  INTO used_hours
+  FROM bids b
+  JOIN tasks t ON t.id = b.task_id
+  WHERE b.user_id = NEW.user_id
+    AND t.assigned_to = b.user_id
+    AND t.status IN ('assigned', 'in_progress', 'review');
+
+  remaining := capacity - used_hours;
+  IF NEW.hours_offered > remaining THEN
+    RAISE EXCEPTION 'hours offered exceed your remaining capacity of %', remaining;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER bids_insert_rules
+  BEFORE INSERT ON bids
   FOR EACH ROW
-  EXECUTE FUNCTION log_status_change('bid');
+  EXECUTE FUNCTION prevent_invalid_bid_insert();

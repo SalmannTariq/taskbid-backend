@@ -42,12 +42,16 @@ export function sendDbError(res: Response, err: unknown) {
 
   if (
     message.includes("invalid task status transition") ||
-    message.includes("invalid bid status transition")
+    message.includes("you cannot bid on your own task") ||
+    message.includes("bids can only be placed on an open task")
   ) {
     return res.status(400).json({ error: message });
   }
 
-  if (message.includes("exceed the user max capacity")) {
+  if (
+    message.includes("exceed your remaining capacity") ||
+    message.includes("exceed the user max capacity")
+  ) {
     return res.status(409).json({ error: message });
   }
 
