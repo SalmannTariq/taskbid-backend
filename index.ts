@@ -3,6 +3,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { pool } from "./db";
 import indexRoutes from "./routes/index.routes";
+import { initSocket } from "./socket";
 
 const app = express();
 const allowedOrigins = (process.env.CORS_WHITELIST ?? "")
@@ -33,6 +34,7 @@ app.get("/health", async (_req, res) => {
     }
   });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log("Server is running on port 3000");
 });
+initSocket(server);

@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import type { BidRow } from "../contract/bid.contract";
 import { pool } from "../db";
 import { parseId, sendDbError, toNumber, withTransaction } from "../lib/http";
+import { publishChange } from "../socket";
 
 function mapBid(row: BidRow) {
   return {
@@ -80,6 +81,7 @@ export async function placeBid(req: Request, res: Response) {
       placed.user_name = name.rows[0]?.name ?? "";
       return { statusCode: 201, body: mapBid(placed) };
     });
+    if (bid.statusCode === 201) publishChange(taskId);
     return res.status(bid.statusCode).json(bid.body);
   } catch (err) {
     return sendDbError(res, err);

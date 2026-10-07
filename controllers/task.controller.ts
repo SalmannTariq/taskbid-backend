@@ -4,6 +4,7 @@ import { pool } from "../db";
 import type { BidOffer, CapacityFitRow } from "../contract/bid.contract";
 import type { StatusError, TaskLockRow, TaskRow } from "../contract/task.contract";
 import { parseId, sendDbError, setActor, toNumber, withTransaction } from "../lib/http";
+import { publishChange } from "../socket";
 
 const patchTargets: Record<string, string[]> = {
   draft: ["open"],
@@ -121,7 +122,9 @@ export async function createTask(req: Request, res: Response) {
        RETURNING id, created_by, title, description, estimated_complexity, status, deadline, created_at`,
       [creatorId, title.trim(), description.trim(), complexity, deadlineDate.toISOString()]
     );
-    return res.status(201).json(mapTask(result.rows[0]));
+    const created = mapTask(result.rows[0]);
+    publishChange(created.id);
+    return res.status(201).json(created);
   } catch (err) {
     return sendDbError(res, err);
   }
@@ -205,6 +208,7 @@ export async function updateTaskStatus(req: Request, res: Response) {
     if (!task) {
       return res.status(404).json({ error: "task not found" });
     }
+    publishChange(taskId);
     return res.json(mapTask(task));
   } catch (err) {
     const statusCode = (err as StatusError).statusCode;
@@ -230,6 +234,7 @@ export async function assignTask(req: Request, res: Response) {
 
   try {
     const result = await withTransaction((client) => assignLowestValidBidder(client, taskId, changedBy));
+    if (result.statusCode === 200) publishChange(taskId);
     return res.status(result.statusCode).json(result.body);
   } catch (err) {
     return sendDbError(res, err);
