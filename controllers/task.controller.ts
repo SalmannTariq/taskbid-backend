@@ -4,6 +4,7 @@ import { pool } from "../db";
 import type { BidOffer, CapacityFitRow } from "../contract/bid.contract";
 import type { StatusError, TaskLockRow, TaskRow } from "../contract/task.contract";
 import { parseId, sendDbError, setActor, toNumber, withTransaction } from "../lib/http";
+import { closeExpiredBidding } from "../lib/closeBidding";
 import { publishChange } from "../socket";
 
 const patchTargets: Record<string, string[]> = {
@@ -53,6 +54,7 @@ export async function listTasks(req: Request, res: Response) {
   console.log("\n End Point Hit : ", req.url)
   console.log("Body : ", req.body)
   try {
+    await closeExpiredBidding();
     const result = await pool.query<TaskRow>(
       `SELECT
           t.id,
@@ -73,10 +75,8 @@ export async function listTasks(req: Request, res: Response) {
               'name', au.name,
               'email', au.email
             )
-            FROM bids b
-            JOIN users au ON au.id = b.user_id
-            WHERE b.task_id = t.id
-            LIMIT 1
+            FROM users au
+            WHERE au.id = t.assigned_to
           ) AS assignee,
           (SELECT COUNT(*)::int FROM bids WHERE task_id = t.id) AS bid_count,
           (SELECT MIN(hours_offered) FROM bids WHERE task_id = t.id) AS lowest_bid

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import type { BidRow } from "../contract/bid.contract";
 import { pool } from "../db";
+import { closeTaskIfDeadlinePassed } from "../lib/closeBidding";
 import { parseId, sendDbError, toNumber, withTransaction } from "../lib/http";
 import { publishChange } from "../socket";
 
@@ -32,8 +33,11 @@ export async function placeBid(req: Request, res: Response) {
 
   try {
     const bid = await withTransaction(async (client) => {
+      if (await closeTaskIfDeadlinePassed(client, taskId)) {
+        return { statusCode: 400, body: { error: "bidding is closed" }, changed: true };
+      }
       const task = await client.query<{ status: string; created_by: string }>(
-        "SELECT status, created_by FROM tasks WHERE id = $1",
+        "SELECT status, created_by FROM tasks WHERE id = $1 FOR UPDATE",
         [taskId]
       );
       if (task.rowCount === 0) {
@@ -81,7 +85,7 @@ export async function placeBid(req: Request, res: Response) {
       placed.user_name = name.rows[0]?.name ?? "";
       return { statusCode: 201, body: mapBid(placed) };
     });
-    if (bid.statusCode === 201) publishChange(taskId);
+    if (bid.statusCode === 201 || ("changed" in bid && bid.changed)) publishChange(taskId);
     return res.status(bid.statusCode).json(bid.body);
   } catch (err) {
     return sendDbError(res, err);

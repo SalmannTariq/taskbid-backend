@@ -3,6 +3,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { pool } from "./db";
 import indexRoutes from "./routes/index.routes";
+import { closeExpiredBidding } from "./lib/closeBidding";
 import { initSocket } from "./socket";
 
 const app = express();
@@ -38,3 +39,8 @@ const server = app.listen(PORT, () => {
     console.log("Server is running on port 3000");
 });
 initSocket(server);
+void closeExpiredBidding();
+const deadlineTimer = setInterval(() => {
+  void closeExpiredBidding();
+}, 5000);
+deadlineTimer.unref();
