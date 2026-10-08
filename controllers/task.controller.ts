@@ -4,7 +4,7 @@ import { pool } from "../db";
 import type { BidOffer, CapacityFitRow } from "../contract/bid.contract";
 import type { StatusError, TaskLockRow, TaskRow } from "../contract/task.contract";
 import { parseId, sendDbError, setActor, toNumber, withTransaction } from "../lib/http";
-import { closeExpiredBidding } from "../lib/closeBidding";
+import { assignClosedTask, closeExpiredBidding } from "../lib/closeBidding";
 import { publishChange } from "../socket";
 
 const patchTargets: Record<string, string[]> = {
@@ -195,12 +195,15 @@ export async function updateTaskStatus(req: Request, res: Response) {
       }
 
       await setActor(client, changedBy);
+      await client.query("UPDATE tasks SET status = $1 WHERE id = $2", [nextStatus, taskId]);
+      if (nextStatus === "bidding_closed") {
+        await assignClosedTask(client, taskId);
+      }
       const updated = await client.query<TaskRow>(
-        `UPDATE tasks
-         SET status = $1
-         WHERE id = $2
-         RETURNING id, created_by, title, description, estimated_complexity, status, deadline, created_at`,
-        [nextStatus, taskId]
+        `SELECT id, created_by, title, description, estimated_complexity, status, deadline, created_at
+         FROM tasks
+         WHERE id = $1`,
+        [taskId]
       );
       return updated.rows[0];
     });

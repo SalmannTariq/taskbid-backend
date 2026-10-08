@@ -55,14 +55,43 @@ export async function closeTaskIfDeadlinePassed(client: PoolClient, taskId: numb
   await setActor(client, creatorId);
   await client.query("UPDATE tasks SET status = 'bidding_closed' WHERE id = $1", [taskId]);
 
-  const winner = await lowestBidder(client, taskId);
-  if (winner) {
-    await client.query(
-      "UPDATE tasks SET status = 'assigned', assigned_to = $2 WHERE id = $1",
-      [taskId, winner.user_id]
-    );
-  }
+  await assignClosedTask(client, taskId);
   return true;
+}
+
+export async function assignClosedTask(client: PoolClient, taskId: number) {
+  const winner = await lowestBidder(client, taskId);
+  if (!winner) return false;
+  const updated = await client.query(
+    "UPDATE tasks SET status = 'assigned', assigned_to = $2 WHERE id = $1 AND status = 'bidding_closed'",
+    [taskId, winner.user_id]
+  );
+  return (updated.rowCount ?? 0) > 0;
+}
+
+async function assignTasksWaitingForBidder() {
+  const waiting = await pool.query<{ id: string; created_by: string }>(
+    `SELECT id, created_by
+     FROM tasks
+     WHERE status = 'bidding_closed' AND assigned_to IS NULL
+     ORDER BY id`
+  );
+  for (const row of waiting.rows) {
+    const taskId = toNumber(row.id);
+    const changed = await withTransaction(async (client) => {
+      const locked = await client.query<{ created_by: string }>(
+        `SELECT created_by
+         FROM tasks
+         WHERE id = $1 AND status = 'bidding_closed' AND assigned_to IS NULL
+         FOR UPDATE`,
+        [taskId]
+      );
+      if (locked.rowCount === 0) return false;
+      await setActor(client, toNumber(locked.rows[0].created_by));
+      return assignClosedTask(client, taskId);
+    });
+    if (changed) publishChange(taskId);
+  }
 }
 
 export async function closeExpiredBidding() {
@@ -80,6 +109,7 @@ export async function closeExpiredBidding() {
       const changed = await withTransaction((client) => closeTaskIfDeadlinePassed(client, taskId));
       if (changed) publishChange(taskId);
     }
+    await assignTasksWaitingForBidder();
   } catch (err) {
     console.error(err);
   } finally {
