@@ -1,8 +1,18 @@
-# TaskBid API
 
-People post tasks, others bid hours, and the lowest bid that still fits the bidder's capacity wins. Status then moves one step at a time from draft to done. Postgres holds the rules that must stay true no matter who writes the row. Express checks that the request is well formed, runs the write, and turns database errors into HTTP responses.
 
-## Run
+TaskBid is a small API where:
+
+1. Someone **posts a task**.
+2. Other people **bid**, saying how many hours they would take.
+3. The **lowest bid wins**, as long as that person still has free time.
+4. The task then moves through its steps until it is done.
+
+The work is split between two parts:
+
+- **Postgres (the database)** enforces the rules that must always be true, no matter who writes the data.
+- **Express (the API)** checks that requests look correct, runs the database work, and turns database errors into proper HTTP responses.
+
+## How to run it
 
 ```bash
 npm install
@@ -10,147 +20,177 @@ npm run migrate
 npm run dev
 ```
 
-`migrate` applies each file in `migrations/` once and records the name in `schema_migrations`. `dev` runs `index.ts` with `tsx` and restarts on save.
+- `migrate` runs each SQL file in `migrations/` once and remembers which ones it already ran (in a table called `schema_migrations`).
+- `dev` starts the server and restarts it when you save a file.
 
-The process reads `DB_URL`, `PORT` (default 3000), and `CORS_WHITELIST` (comma-separated browser origins).
+Settings the app reads:
+
+| Setting | Meaning |
+|---|---|
+| `DB_URL` | Database connection address |
+| `PORT` | Server port (default 3000) |
+| `CORS_WHITELIST` | Websites allowed to call the API (comma-separated) |
 
 ## Routes
 
 | Method | Path | What it does |
-| --- | --- | --- |
-| GET | `/health` | Confirms the process and Postgres are up |
-| GET | `/users` | Lists id, name, email |
-| GET | `/users/:id/workload` | Current hours, max capacity, remaining hours |
-| GET | `/tasks` | Lists tasks with creator, assignee, bid count, lowest bid |
-| POST | `/tasks` | Creates a draft |
-| PATCH | `/tasks/:id/status` | Moves status one allowed step |
-| POST | `/tasks/:id/assign` | Assigns the cheapest bidder who still has capacity |
-| POST | `/tasks/:id/bids` | Places one bid |
-| GET | `/tasks/:id/bids` | Lists that task's bids, cheapest first |
-| GET | `/dashboard/stats` | Counts, average bids, top completers, tasks that got no bids |
+|---|---|---|
+| GET | `/health` | Checks the server and database are alive |
+| GET | `/users` | Lists users (id, name, email) |
+| GET | `/users/:id/workload` | Shows a user's current hours, max hours, and hours left |
+| GET | `/tasks` | Lists tasks with creator, assignee, number of bids, and lowest bid |
+| POST | `/tasks` | Creates a new task (starts as a draft) |
+| PATCH | `/tasks/:id/status` | Moves a task one allowed step forward |
+| POST | `/tasks/:id/assign` | Gives the task to the cheapest bidder who still has time |
+| POST | `/tasks/:id/bids` | Places a bid |
+| GET | `/tasks/:id/bids` | Lists a task's bids, cheapest first |
+| GET | `/dashboard/stats` | Counts and averages for a dashboard |
 
-A task status can only move `draft → open → bidding_closed → assigned → in_progress → review → done`. `POST /tasks/:id/assign` is the only request that sets `assigned`. When a deadline passes, a timer does that same close-and-assign itself.
+**Task steps, always in this order:**
 
-## Express, TypeScript, and `pg`
+`draft → open → bidding_closed → assigned → in_progress → review → done`
 
-A small JSON API can sit on Nest, Fastify, or a framework that generates the routes. It can also talk to Postgres through Prisma, TypeORM, or Drizzle.
+Only `POST /tasks/:id/assign` can set `assigned`. When a deadline passes, a timer does the same close-and-assign automatically.
 
-This server is Express 5 plus TypeScript, and every query is a SQL string on `node-postgres`. The interesting behavior is not a controller method. It is `SELECT ... FOR UPDATE`, a trigger, a view, and `set_config`. An ORM would hide those, or force them out into raw queries anyway. Express is enough because there is one router file per resource and no module system to configure.
+## Tech choices
 
-TypeScript runs through `tsx`, so dev and start do not compile to a `dist` folder. The types in `contract/` describe the rows a query returns. They are not a second model of the tables.
+**Express + TypeScript + `pg` (raw SQL, no ORM).** The important behavior (row locks, triggers, a view, `set_config`) is database-level. An ORM would hide those or make you write raw SQL anyway. Express is enough because each resource has one router file.
 
-## Migrations are SQL files
+**`tsx` runs the TypeScript directly**, so there is no `dist` build folder. The types in `contract/` only describe what a query returns. They are not a second copy of the table design.
 
-Schema changes can live in an ORM migration, a query builder, or numbered `.sql` files.
+**Migrations are plain numbered `.sql` files.** They run in filename order, each inside its own transaction, and a file that already ran is skipped. Since the schema includes triggers and a view, it is easier to read the real SQL than a generated diff.
 
-Each change here is a file under `migrations/`, applied in filename order inside its own transaction. The runner skips a file whose name is already in `schema_migrations`. The schema includes triggers and a view, which are easier to read as the SQL Postgres will actually run than as a generated diff.
+## Where each rule lives
 
-## Row shape is a `CHECK`. A rule about other rows is a trigger
+**Rules about one row → `CHECK` constraints.** These need no extra lookup:
 
-A column rule can be a `CHECK`, an application `if`, or both. A rule that reads another table can be a trigger, a database function the handler calls, or code that runs before the `INSERT`.
+- name is not blank
+- email looks like an email
+- complexity is 1 to 5
+- hours are positive
+- status is one of the allowed words
 
-Blank names, email shape, complexity 1–5, positive hours, and the status list are `CHECK` constraints. They look at one row and need no extra query.
+**Rules that look at other rows → triggers.** The status trigger is in `002_create_tasks.sql`. The bid trigger and the one-bid unique index are in `003_create_bids.sql`:
 
-Five rules look at other rows. The status trigger is in `migrations/002_create_tasks.sql`. The bid trigger and the one-bid unique index are in `migrations/003_create_bids.sql`:
+1. You can't bid on your own task.
+2. A bid can't be bigger than your remaining free hours.
+3. You can only bid on an `open` task before its deadline.
+4. A status can only move one step forward.
+5. One user can bid only once per task (`UNIQUE (task_id, user_id)`).
 
-- A user cannot bid on their own task.
-- A bid larger than the user's remaining capacity is rejected.
-- A bid cannot be inserted unless the task is `open` and the deadline is still in the future.
-- A task status can only move one step forward.
-- One user can place only one bid on a task (`UNIQUE (task_id, user_id)`).
+**Why the database and not just the API?** Every write passes through the database: the API, the deadline timer, or a future script. If the rule lived only in `placeBid`, a direct `INSERT` could break it. The capacity check also locks the user's row, so two bids arriving at the same moment can't both pass when there is room for only one.
 
-The database is the last place every write goes through. The API, the deadline timer, or a future script all hit the same trigger. Putting the rule only in `placeBid` would leave a direct `INSERT` able to break it. The capacity check locks the user row inside the trigger, so two bids submitted at the same moment cannot both pass when only one of them fits.
+`placeBid` still checks that the ids and hours are well formed. Postgres raises the business-rule errors, and `sendDbError` turns them into 400 or 409 responses. Useful error codes:
 
-`placeBid` still checks that the ids and hours are well formed, then inserts. Postgres raises the business-rule errors. `sendDbError` turns those exception strings into 400 or 409. Unique violations are SQLSTATE `23505`, missing foreign keys are `23503`, and failed checks are `23514`.
+| Code | Meaning |
+|---|---|
+| `23505` | Unique rule broken |
+| `23503` | Missing foreign key |
+| `23514` | `CHECK` failed |
 
-Deleting a task cascades to its bids. Deleting a user is `RESTRICT` wherever that user is a creator, bidder, assignee, or audit actor, so history is not removed by a user delete.
+**Deleting data:**
 
-## Workload is a view
+- Deleting a task also deletes its bids (cascade).
+- Deleting a user is blocked (`RESTRICT`) if they are a creator, bidder, assignee, or audit actor, so history is never lost.
 
-Remaining capacity can be a column updated on every assign, a counter in Redis, or a sum computed when it is read.
+## Workload is calculated, not stored
 
-`user_workloads` is a view. `current_workload` is the sum of `hours_offered` on bids whose user is `tasks.assigned_to` and whose task is `assigned`, `in_progress`, or `review`. Setting `assigned_to` is what changes the sum. A stored number can drift from the tasks it is supposed to describe. The view cannot.
+You could store "remaining hours" as a column, but it can drift out of date. Instead, `user_workloads` is a **view**, a saved query that recalculates every time.
 
-`GET /users/:id/workload` reads that view and subtracts. The bid trigger and the assign query use the same sum, so the number a user sees and the number a write enforces are the same calculation.
+`current_workload` = the sum of `hours_offered` on bids where:
 
-## Assigning a bidder is one transaction
+- the task is assigned to that user, **and**
+- the task status is `assigned`, `in_progress`, or `review`.
 
-Picking a winner can be "read the bids, then update" with no lock, an optimistic version column, or `SERIALIZABLE` isolation. Two of those still lose when two tasks want the same person's last free hours, unless both transactions lock that person before they read capacity.
+`GET /users/:id/workload` reads this view and subtracts from max capacity. The bid trigger and the assign code use the same sum, so what the user sees is exactly what the database enforces.
 
-`POST /tasks/:id/assign` and the deadline closer share one walk:
+## Assigning a bidder (one transaction)
 
-1. Lock the task row (`SELECT ... FOR UPDATE`). A second assign of the same task waits here.
-2. Lock that task's bids, ordered by lowest hours, then earliest bid.
-3. Lock every bidder's user row, in user id order, before reading capacity.
-4. Walk the bids from lowest to highest. For each bidder, add this bid's hours to the hours already on their assigned work. If that total is above `max_capacity_hours`, skip them.
-5. Write status `assigned` and `assigned_to` for the first bidder who still fits.
-6. If the task has no bids, return 409 `task has no bids`. If nobody still fits, return 409 `no bidder has enough remaining capacity` and change no rows.
+The risk: two tasks both want the same person's last free hours. Reading and then updating without locks lets both succeed. So everything happens in one transaction with locks.
 
-`withTransaction` begins, commits, and on any throw rolls back, then releases the pooled client. Status and assignee cannot be saved separately.
+`POST /tasks/:id/assign` and the deadline closer follow the same steps:
 
-Two assigns on different tasks can want the same person's last free hours. Both lock that user row before they read remaining capacity, and they keep the lock until commit. The second call waits. After the first commit, its capacity query sees the new assignment. Locking users in id order keeps two transactions from locking the same people in opposite orders, which is how those two calls would deadlock.
+1. **Lock the task row.** A second assign for the same task waits.
+2. **Lock the task's bids**, ordered by lowest hours, then earliest bid.
+3. **Lock each bidder's user row**, in user-id order, before reading capacity.
+4. **Go through bids from lowest to highest.** Add the bid's hours to the person's already-assigned hours. If the total is over `max_capacity_hours`, skip that person.
+5. **Save** `status = assigned` and `assigned_to` for the first bidder who fits.
+6. **If it fails:**
+   - no bids → 409 `task has no bids`
+   - nobody fits → 409 `no bidder has enough remaining capacity`, and nothing changes
 
-The deadline job uses the same walk. It does not call the HTTP handler. It updates the row itself, so the trigger still checks the status step.
+`withTransaction` starts the transaction, commits when done, rolls back on any error, and always returns the connection to the pool. So the status and the assignee can never be saved separately.
 
-## Who may move a status stays in the handler
+When two assigns compete for the same person, the second one waits. After the first commits, the second sees the new assignment and moves on to the next bidder. Locking users in id order stops two transactions from waiting on each other forever (a deadlock).
 
-The allowed arrows can live only in the trigger, only in the handler, or in both. "Only the creator" and "only the assignee" need to know who called. A trigger does not see the HTTP body unless the handler passes that id in.
+The deadline job follows the same steps but doesn't call the HTTP handler. It updates the row directly, so the status trigger still checks the step.
 
-The trigger rejects any jump that is not the next step, including a jump from a script that forgot the check. The handler owns the person:
+## Who can change a status
 
-- From `draft`, `open`, or `review`, `changedBy` must be the creator.
-- From `assigned` or `in_progress`, `changedBy` must be the assignee.
-- `bidding_closed` is not a `PATCH` target. Assignment is `POST /tasks/:id/assign`, and only the creator can call it.
-- The handler also refuses `status: "assigned"` on `PATCH`, because that path would set a status without choosing `assigned_to`.
+"Only the creator" and "only the assignee" depend on who is calling, and a trigger can't see the request body. So the split is:
 
-The handler locks the task row before it checks the current status, so two patches cannot both pass the check and then overwrite each other.
+- **Trigger:** rejects any jump that isn't the next step, even from a script.
+- **Handler:** checks the person:
+  - From `draft`, `open`, or `review` → `changedBy` must be the **creator**.
+  - From `assigned` or `in_progress` → `changedBy` must be the **assignee**.
+  - `bidding_closed` can't be a `PATCH` target. Assigning goes through `POST /tasks/:id/assign`, and only the creator can call it.
+  - `PATCH` refuses `status: "assigned"`, because it would set a status without choosing an assignee.
 
-## The audit row is written by a trigger
+The handler locks the task row before checking, so two patches can't both pass and overwrite each other.
 
-The status history can be an `INSERT` in each controller, or a trigger that runs on every status update.
+## Audit history (written by a trigger)
 
-`log_status_change` runs after a task status change and inserts into `audit_log`. The deadline closer and `PATCH` both update `tasks.status`, so both get a row without a second insert in TypeScript.
+`log_status_change` runs after every task status change and writes a row to `audit_log`. Because the deadline closer and `PATCH` both update `status`, both get a log row with no extra code.
 
-The trigger needs to know who did it. There is no user column on the `UPDATE`. The handler calls `setActor`, which runs `set_config('app.user_id', ..., true)`. The third argument makes the setting local to this transaction. The connection goes back to the pool after commit, and the next request on that connection does not inherit the previous actor. If the setting is missing, the trigger raises and the status change rolls back.
+The trigger needs to know **who** did it. The handler calls `setActor`, which runs `set_config('app.user_id', ..., true)`. The `true` makes the setting last only for this transaction, so the next request on the same pooled connection does not inherit it. If the setting is missing, the trigger raises an error and the status change is rolled back.
 
-On deadline close, the actor stored is the task creator, because that close is the system acting for the task they posted.
+On a deadline close, the logged actor is the task creator, since the system is acting on their behalf.
 
-## Deadlines are closed in this process
+## Deadlines are closed inside the API process
 
-Expired bidding can be closed by `pg_cron`, a separate worker, or a timer in the API process. It can also be closed only when someone next reads the task.
+You could use `pg_cron`, a separate worker, or close on read. This project uses a timer in the API:
 
-`closeExpiredBidding` runs at startup and every 5 seconds. `GET /tasks` calls it too, so a list does not keep showing `open` after the deadline just because the timer has not fired. A `closing` flag drops a second run that starts while the first is still in the loop. The timer is `unref`'d so it does not keep the process alive by itself.
+- `closeExpiredBidding` runs at startup and every 5 seconds.
+- `GET /tasks` also calls it, so the list never shows `open` after the deadline.
+- A `closing` flag skips a new run if the previous one is still working.
+- The timer is `unref`'d, so it doesn't keep the process alive on its own.
+- Each task closes in its **own transaction**, so one failure doesn't undo the others.
+- A task becomes `bidding_closed`, then `assigned` if someone fits. If nobody fits, it stays `bidding_closed`, and the creator can call assign later when capacity frees up.
 
-Each due task is its own transaction. One failure does not roll back the tasks already closed. Inside the transaction the status becomes `bidding_closed`, then `assigned` if some bidder still fits. If nobody fits, it stays `bidding_closed` and the creator can call `POST /tasks/:id/assign` later, when capacity has freed.
+The **bid trigger is the real guard**. Even if the timer is late and the status still says `open`, a bid after the deadline is rejected.
 
-The bid trigger is the real guard. Even if the timer is late and the row still says `open`, an insert after `deadline <= NOW()` is rejected. The timer's job is to move the status and pick a winner, not to be the only thing stopping a late bid.
+## Real-time updates
 
-## Clients hear `changed` and refetch
+Socket.IO is attached to the same HTTP server as Express, so REST and sockets share one port and the same CORS list.
 
-A board can poll, use server-sent events, or open a websocket. The socket can push the new task, or it can push "this id changed."
+After a create, bid, status change, assign, or deadline close, `publishChange` sends a `changed` event with `{ taskId }` to every connected client. Only the **id** is sent, not the full row. The client then refetches `GET /tasks` and `GET /tasks/:id/bids`, which already contain the joined data. This avoids keeping a second data shape in sync. There are no rooms, because every screen shows the same board.
 
-Socket.IO is attached to the same HTTP server as Express, so REST and the socket share the port and the CORS whitelist. After a create, a bid, a status change, an assign, or a deadline close, `publishChange` emits `changed` with `{ taskId }` to every connected client. The payload is the id, not the row. The client already has `GET /tasks` and `GET /tasks/:id/bids`, and those responses are the ones that join users and bid totals. Pushing a partial row from the write would be a second shape to keep in step.
+## Dashboard
 
-There are no rooms. Every screen shows the same board, so every client needs every task id.
+`GET /dashboard/stats` is **one SQL query** returning JSON:
 
-## One dashboard query
+- tasks by status
+- average bid per complexity level
+- top three users with `done` tasks
+- tasks whose deadline passed with zero bids
 
-Dashboard numbers can be four requests, or one SQL statement that returns JSON.
+`generate_series(1, 5)` makes sure complexity levels 1 to 5 always appear, even with no data. `COALESCE` turns empty results into `{}` or `[]`. The handler only renames fields to camelCase.
 
-`GET /dashboard/stats` is one query. `jsonb_object_agg` and `jsonb_agg` build tasks-by-status, average bid by complexity, the top three users with `done` tasks, and zero-bid tasks whose deadline has passed. `generate_series(1, 5)` keeps complexities with no rows in the result, so the client always gets levels 1 through 5. `COALESCE` turns an empty aggregate into `{}` or `[]`. The handler only renames those fields to camelCase.
+## JSON style
 
-## Request JSON is camelCase. Tables are snake_case
+- **Request/response JSON** uses camelCase (`createdBy`, `hoursOffered`, `bidCount`).
+- **Database tables** use snake_case.
+- Postgres `BIGINT` and `NUMERIC` arrive as strings, so ids and hours go through `toNumber` before being sent.
+- Handlers only check the **shape** of input (title present, complexity 1 to 5, valid date, positive id, hours above 0). Anything that depends on other rows is left to the triggers.
 
-The handler can return `pg` rows as-is, or map them.
+ 
+## Trade-offs
 
-Responses are mapped in the controller (`createdBy`, `hoursOffered`, `bidCount`). Postgres `BIGINT` and `NUMERIC` arrive as strings, so ids and hours go through `toNumber` before they are sent. Input is checked in the handler for shape only: present title, complexity 1–5, a real date, a positive id, hours greater than 0. Anything that depends on another row waits for the trigger.
+- The full rule isn't visible in the controller. Read the migrations next to the TypeScript:
+  - `002_create_tasks.sql` and `003_create_bids.sql` for the rules
+  - `004_create_audit_log.sql` for audit rows
+  - `005_create_user_workloads.sql` for the workload sum
+- Changing a rule needs a new migration, which is slower than editing a function.
+- The API's error message must match the database's `RAISE EXCEPTION` text.
+- Triggers are harder to spot in a stack trace than a normal `if`.
 
-## What is left in the request body
-
-Login can be a session cookie, a JWT, or an id the client sends.
-
-`users.password` exists, and bcrypt, jsonwebtoken, and cookie-parser are installed, but no route signs a token or reads a cookie yet. `createdBy`, `changedBy`, and `userId` come from the JSON body. That id is what `setActor` stores and what the creator/assignee checks compare. The triggers still reject an illegal bid or an illegal status jump. They do not prove the caller is that user. A later login can replace the body id with the id from a verified token without moving the rules out of Postgres.
-
-## Trade-off that shows up everywhere
-
-The controller does not show the full rule. You read `migrations/002_create_tasks.sql` and `migrations/003_create_bids.sql` next to the TypeScript. Audit rows are `migrations/004_create_audit_log.sql`. The workload sum is `migrations/005_create_user_workloads.sql`. Changing a rule means a new migration, which is slower than editing a function, and the API message has to stay in step with the `RAISE EXCEPTION` text. Triggers are also harder to see in a stack trace than a normal `if`. What you get back is one definition of the rule that still holds when the application code is bypassed.

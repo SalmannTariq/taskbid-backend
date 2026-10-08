@@ -2,7 +2,6 @@ CREATE TABLE users (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
-  password TEXT NOT NULL,
 
   hourly_rate NUMERIC(10, 2) NOT NULL,
   max_capacity_hours NUMERIC(6, 2) NOT NULL,
